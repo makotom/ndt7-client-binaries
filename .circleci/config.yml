@@ -1,0 +1,254 @@
+version: 2.1
+
+setup: << pipeline.parameters.is-setup >>
+
+parameters:
+  force-build:
+    type: string
+    default: ""
+
+  # Parameters below are intended for internal use only
+  is-setup:
+    type: boolean
+    default: true
+  src-repo:
+    type: string
+    default: https://github.com/m-lab/ndt7-client-go.git
+  target-commit-hash:
+    type: string
+    default: ""
+  build-name:
+    type: string
+    default: ""
+  release-on:
+    type: string
+    default: main
+
+executors:
+  go:
+    docker:
+      - image: golang:1.18
+    resource_class: medium
+  ubuntu-docker:
+    docker:
+      - image: ubuntu:rolling
+    resource_class: medium
+  ubuntu-machine-aarch64:
+    machine:
+      image: ubuntu-2004:current
+    resource_class: arm.medium
+  windows:
+    machine:
+      image: windows-server-2019-vs2019:stable
+    resource_class: windows.medium
+    shell: powershell.exe
+  macos:
+    macos:
+      xcode: 13.3.0
+    resource_class: macos.x86.medium.gen2
+
+jobs:
+  setup:
+    executor: ubuntu-docker
+    parameters:
+      continue-config:
+        type: string
+        default: .circleci/config.yml
+    steps:
+      - checkout
+      - run:
+          name: Install dependencies
+          command: |
+            apt update
+            apt install -y git jq curl
+      - run:
+          name: Determine whether we should build the source
+          command: |
+            TARGET_REV="master"
+            if [[ -n "${FORCE_BUILD}" ]]; then
+              TARGET_REV="${FORCE_BUILD}"
+              echo Forcibly setting TARGET_REV to "${TARGET_REV}"!
+            fi
+            echo Building "${TARGET_REV}"
+
+            git clone "${SRC_REPO}" src
+            pushd src
+            git checkout "${TARGET_REV}"
+            TARGET_COMMIT_HASH=$(git rev-parse HEAD)
+            export TARGET_COMMIT_HASH
+            popd
+            echo Corresponding commit hash is "${TARGET_COMMIT_HASH}".
+            echo
+
+            if [[ -n "${FORCE_BUILD}" ]] || ! (git tag | grep -P "^\d+-${TARGET_COMMIT_HASH:0:7}-${CIRCLE_SHA1:0:7}"); then
+              echo Calling CircleCI API to build commit "${TARGET_COMMIT_HASH}"...
+
+              curl \
+                --fail \
+                -X POST \
+                -H "Content-Type: application/json" \
+                --data-binary "$(
+                  jq -n \
+                    --arg config "$(cat "${CONTINUE_CONFIG}")" \
+                    --arg build_name "${CIRCLE_BUILD_NUM}-${TARGET_COMMIT_HASH:0:7}-${CIRCLE_SHA1:0:7}" \
+                    '{
+                      "continuation-key": $ENV.CIRCLE_CONTINUATION_KEY,
+                      "configuration": $config,
+                      "parameters": {
+                        "is-setup": false,
+                        "target-commit-hash": $ENV.TARGET_COMMIT_HASH,
+                        "build-name": $build_name
+                      }
+                    }'
+                )" \
+                https://circleci.com/api/v2/pipeline/continue
+            else
+              echo 'We have already built this target with the tag(s) above. Halting the pipeline.'
+              circleci-agent step halt
+            fi
+          environment:
+            FORCE_BUILD: << pipeline.parameters.force-build >>
+            SRC_REPO: << pipeline.parameters.src-repo >>
+            CONTINUE_CONFIG: << parameters.continue-config >>
+
+  build:
+    executor: go
+    parameters:
+      goos:
+        type: string
+      goarch:
+        type: string
+    steps:
+      - checkout
+      - run:
+          name: Install dependencies
+          command: |
+            apt update
+            apt install -y zip
+      - run:
+          name: Build
+          command: |
+            GOOS_LIST_OVERRIDE=("${TARGET_GOOS}") GOARCH_LIST_OVERRIDE=("${TARGET_GOARCH}") ./build-and-pack-all.sh
+          environment:
+            TARGET_GOOS: << parameters.goos >>
+            TARGET_GOARCH: << parameters.goarch >>
+            TARGET_REV: << pipeline.parameters.target-commit-hash >>
+            BUILD_NAME: << pipeline.parameters.build-name >>
+      - persist_to_workspace:
+          root: dist
+          paths:
+            - << parameters.goos >>/<< parameters.goarch >>
+            - "*.tar.gz"
+            - "*.zip"
+      - store_artifacts:
+          path: dist
+          destination: /
+
+  test-unified:
+    parameters:
+      executor:
+        type: string
+      extract-cmd:
+        type: string
+    executor: << parameters.executor >>
+    steps:
+      - attach_workspace:
+          at: .
+      - run:
+          name: Extracting executable
+          command: << parameters.extract-cmd >>
+          environment:
+            BUILD_NAME: << pipeline.parameters.build-name >>
+      - run:
+          name: Test executable
+          command: ./ndt7-client --help
+      - run:
+          name: Conduct measurement (download only)
+          command: ./ndt7-client -upload=0
+
+  release:
+    executor: ubuntu-docker
+    steps:
+      - attach_workspace:
+          at: .
+      - run:
+          name: Install dependencies
+          command: |
+            apt update
+            apt install -y curl git
+
+            tmpPath=$(mktemp)
+            curl -sSJL https://api.github.com/repos/cli/cli/releases/latest | grep -o 'https://github.com/cli/cli/releases/download/[^/]\{1,\}/gh_[^/]\{1,\}_linux_amd64.deb' | xargs curl -o $tmpPath -JL
+            dpkg -i $tmpPath
+      - run:
+          name: Create a release
+          command: |
+            gh release create -R "${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}" -t "${RELEASE_NAME}" -n "Source: https://github.com/m-lab/ndt7-client-go/tree/${TARGET_COMMIT_HASH}" "${RELEASE_NAME}" --target "${CIRCLE_SHA1}" ./*.tar.gz ./*.zip
+          environment:
+            RELEASE_NAME: << pipeline.parameters.build-name >>
+            TARGET_COMMIT_HASH: << pipeline.parameters.target-commit-hash >>
+
+workflows:
+  setup:
+    when: << pipeline.parameters.is-setup >>
+    jobs:
+      - setup
+
+  build-test-release:
+    when:
+      not: << pipeline.parameters.is-setup >>
+    jobs:
+      - build:
+          name: build-<< matrix.goos >>-<< matrix.goarch >>
+          matrix:
+            parameters:
+              goos:
+                - linux
+                - windows
+                - darwin
+                - android
+              goarch:
+                - amd64
+                - arm64
+
+      - test-unified:
+          name: test-linux-amd64
+          requires:
+            - build-linux-amd64
+          executor: ubuntu-docker
+          extract-cmd: |
+            apt update
+            apt install -y ca-certificates
+            tar -xf "ndt7-client-${BUILD_NAME}-linux-amd64.tar.gz"
+      - test-unified:
+          name: test-linux-arm64
+          requires:
+            - build-linux-arm64
+          executor: ubuntu-machine-aarch64
+          extract-cmd: tar -xf "ndt7-client-${BUILD_NAME}-linux-arm64.tar.gz"
+      - test-unified:
+          name: test-windows-amd64
+          requires:
+            - build-windows-amd64
+          executor: windows
+          extract-cmd: |
+            $ProgressPreference = "SilentlyContinue"
+            Expand-Archive "ndt7-client-${env:BUILD_NAME}-windows-amd64.zip" .
+      - test-unified:
+          name: test-darwin-amd64
+          requires:
+            - build-darwin-amd64
+          executor: macos
+          extract-cmd: unzip "ndt7-client-${BUILD_NAME}-darwin-amd64.zip"
+
+      - release:
+          requires:
+            - build
+            - test-linux-amd64
+            - test-linux-arm64
+            - test-windows-amd64
+            - test-darwin-amd64
+          context: github
+          filters:
+            branches:
+              only: << pipeline.parameters.release-on >>
