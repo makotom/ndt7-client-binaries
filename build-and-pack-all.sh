@@ -87,9 +87,9 @@ package() {
 
     pushd "dist/${goos}/${goarch}"
     if [[ "${goos}" == "linux" ]] || [[ "${goos}" == "android" ]]; then
-        tar -czf "../../ndt7-client-${BUILD_NAME}-${goos}-${goarch}.tar.gz" .
+        tar -czf "../../ndt7-client-${BUILD_NAME}-${goos}-${goarch}.tar.gz" -- *
     else
-        zip -r "../../ndt7-client-${BUILD_NAME}-${goos}-${goarch}.zip" .
+        zip -r "../../ndt7-client-${BUILD_NAME}-${goos}-${goarch}.zip" -- *
     fi
     popd
 }
