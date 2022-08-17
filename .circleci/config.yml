@@ -64,7 +64,7 @@ jobs:
       - run:
           name: Determine whether we should build the source
           command: |
-            TARGET_REV="master"
+            TARGET_REV="main"
             if [[ -n "${FORCE_BUILD}" ]]; then
               TARGET_REV="${FORCE_BUILD}"
               echo Forcibly setting TARGET_REV to "${TARGET_REV}"!
