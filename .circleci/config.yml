@@ -210,6 +210,9 @@ workflows:
               goarch:
                 - amd64
                 - arm64
+            exclude:
+              - goos: windows
+                goarch: arm64
 
       - test-unified:
           name: test-linux-amd64
