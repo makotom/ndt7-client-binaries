@@ -27,29 +27,29 @@ parameters:
 executors:
   go:
     docker:
-      - image: golang:1.18
+      - image: golang:1.22
     resource_class: medium
-  ubuntu-docker:
+  ubuntu-docker-amd64:
     docker:
       - image: ubuntu:rolling
     resource_class: medium
-  ubuntu-machine-aarch64:
-    machine:
-      image: ubuntu-2004:current
+  ubuntu-docker-aarch64:
+    docker:
+      - image: ubuntu:rolling
     resource_class: arm.medium
   windows:
     machine:
-      image: windows-server-2019-vs2019:stable
+      image: windows-server-2022-gui:current
     resource_class: windows.medium
     shell: powershell.exe
   macos:
     macos:
-      xcode: 14.3.1
-    resource_class: macos.x86.medium.gen2
+      xcode: 15.3.0
+    resource_class: macos.m1.medium.gen1
 
 jobs:
   setup:
-    executor: ubuntu-docker
+    executor: ubuntu-docker-amd64
     parameters:
       continue-config:
         type: string
@@ -167,7 +167,7 @@ jobs:
           command: ./ndt7-client -upload=0
 
   release:
-    executor: ubuntu-docker
+    executor: ubuntu-docker-amd64
     steps:
       - attach_workspace:
           at: .
@@ -218,7 +218,7 @@ workflows:
           name: test-linux-amd64
           requires:
             - build-linux-amd64
-          executor: ubuntu-docker
+          executor: ubuntu-docker-amd64
           extract-cmd: |
             apt update
             apt install -y ca-certificates
@@ -227,8 +227,11 @@ workflows:
           name: test-linux-arm64
           requires:
             - build-linux-arm64
-          executor: ubuntu-machine-aarch64
-          extract-cmd: tar -xf "ndt7-client-${BUILD_NAME}-linux-arm64.tar.gz"
+          executor: ubuntu-docker-aarch64
+          extract-cmd: |
+            apt update
+            apt install -y ca-certificates
+            tar -xf "ndt7-client-${BUILD_NAME}-linux-arm64.tar.gz"
       - test-unified:
           name: test-windows-amd64
           requires:
@@ -238,11 +241,11 @@ workflows:
             $ProgressPreference = "SilentlyContinue"
             Expand-Archive "ndt7-client-${env:BUILD_NAME}-windows-amd64.zip" .
       - test-unified:
-          name: test-darwin-amd64
+          name: test-darwin-arm64
           requires:
-            - build-darwin-amd64
+            - build-darwin-arm64
           executor: macos
-          extract-cmd: unzip "ndt7-client-${BUILD_NAME}-darwin-amd64.zip"
+          extract-cmd: unzip "ndt7-client-${BUILD_NAME}-darwin-arm64.zip"
 
       - release:
           requires:
@@ -250,7 +253,7 @@ workflows:
             - test-linux-amd64
             - test-linux-arm64
             - test-windows-amd64
-            - test-darwin-amd64
+            - test-darwin-arm64
           context: github
           filters:
             branches:
