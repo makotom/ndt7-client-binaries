@@ -25,10 +25,14 @@ parameters:
     default: main
 
 executors:
-  go:
+  go-amd64:
     docker:
       - image: golang
     resource_class: medium
+  go-aarch64:
+    docker:
+      - image: golang
+    resource_class: arm.medium
   ubuntu-docker-amd64:
     docker:
       - image: ubuntu:rolling
@@ -39,13 +43,13 @@ executors:
     resource_class: arm.medium
   windows:
     machine:
-      image: windows-server-2022-gui:current
+      image: windows-server-2025-gui:current
     resource_class: windows.medium
     shell: powershell.exe
   macos:
     macos:
-      xcode: 15.3.0
-    resource_class: macos.m1.medium.gen1
+      xcode: 26.2.0
+    resource_class: m4pro.medium
 
 jobs:
   setup:
@@ -112,12 +116,14 @@ jobs:
             CONTINUE_CONFIG: << parameters.continue-config >>
 
   build:
-    executor: go
     parameters:
+      executor:
+        type: string
       goos:
         type: string
       goarch:
         type: string
+    executor: << parameters.executor >>
     steps:
       - checkout
       - run:
@@ -201,18 +207,41 @@ workflows:
       - build:
           name: build-<< matrix.goos >>-<< matrix.goarch >>
           matrix:
+            alias: build-amd64
             parameters:
+              executor:
+                - go-amd64
               goos:
                 - linux
                 - windows
                 - darwin
+              goarch:
+                - amd64
+      - build:
+          name: build-<< matrix.goos >>-<< matrix.goarch >>
+          matrix:
+            alias: build-arm64
+            parameters:
+              executor:
+                - go-aarch64
+              goos:
+                - linux
+                - windows
+                - darwin
+              goarch:
+                - arm64
+      - build:
+          name: build-<< matrix.goos >>-<< matrix.goarch >>
+          matrix:
+            alias: build-android
+            parameters:
+              executor:
+                - go-amd64
+              goos:
                 - android
               goarch:
                 - amd64
                 - arm64
-            exclude:
-              - goos: windows
-                goarch: arm64
 
       - test-unified:
           name: test-linux-amd64
@@ -249,7 +278,9 @@ workflows:
 
       - release:
           requires:
-            - build
+            - build-amd64
+            - build-arm64
+            - build-android
             - test-linux-amd64
             - test-linux-arm64
             - test-windows-amd64
